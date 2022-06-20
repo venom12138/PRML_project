@@ -1,0 +1,1 @@
+srun -p video --ntasks-per-node 1 --gres=gpu:1 --quotatype=spot --cpus-per-task=4 python dp_finetuning.py

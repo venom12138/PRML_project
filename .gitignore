@@ -1,0 +1,5 @@
+/data/
+/wandb/
+/imgs/
+/__pycache__/
+/*.pth
