@@ -131,7 +131,7 @@ def main(local_rank, args):
     scaler = GradScaler() if args.precision == "amp" else None
     logger.info("=> Start Training")
     if rank == 0:
-        best_rank = 1000000000000
+        best_acc = 0
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
         train_epoch(
@@ -154,14 +154,14 @@ def main(local_rank, args):
                     }, os.path.join(exp._save_dir,f"model_{epoch}.pt")) 
             dist.barrier()
         if rank == 0:
-            val_metrics = evaluate(args,valid_dataloader,model)
-            cur_rank = val_metrics['image_to_text_mean_rank'] + 0.1 * val_metrics['image_to_text_median_rank']
-            if cur_rank < best_rank:
-                best_rank = cur_rank
+            acc_valid = evaluate(args,valid_dataloader,model)
+            
+            if acc_valid > best_acc:
+                best_acc = acc_valid
                 torch.save({
                     'state_dict':model.state_dict()
                 },os.path.join(exp._save_dir,'model_best.pt'))
-            logger.info('Best mean rank:{},current mean rank:{}'.format(best_rank,cur_rank))
+            logger.info('Best acc:{},current acc:{}'.format(best_acc,acc_valid))
         dist.barrier()
 
 def train_epoch(args,epoch,data_loader,model,optimizer, scaler, 
@@ -211,33 +211,26 @@ def evaluate(args, valid_dataloader, model):
     num_samples = 0
     autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
     model.eval()
-    all_image_features,all_text_features = [], []
+    pred = []
+    gt = []
     with torch.no_grad():
         for batch in tqdm(valid_dataloader):
             images, texts, info = batch 
             images= images.cuda()
             texts = texts.cuda()
             with autocast():
+                # 单卡eval
                 image_features, text_features, logit_scale = model.module(images, texts)
-                all_image_features.append(image_features.cpu())
-                all_text_features.append(text_features.cpu())
-                logit_scale = logit_scale.mean()
-                logits_per_image = logit_scale * image_features @ text_features.t()
-                logits_per_text = logits_per_image.t()
-                batch_size = images.shape[0]
-                labels = torch.arange(batch_size,device=args.device).long()
-                total_loss = (
-                    F.cross_entropy(logits_per_image, labels)+
-                    F.cross_entropy(logits_per_text, labels)
-                ) / 2
-            cumulative_loss += total_loss * batch_size 
-            num_samples += batch_size
-        val_metrics = get_metrics(
-            image_features=torch.cat(all_image_features),
-            text_features = torch.cat(all_text_features),
-            logit_scale=logit_scale.cpu()
-        )
-    return val_metrics
+                probs = logits_per_image.softmax(dim=-1).cpu().numpy()
+                tag = np.argmax(probs, axis=-1)
+                pred.extend(list(np.array(info['caption'])[tag]))
+                gt.extend(info['caption'])
+            
+        for i in range(len(gt)):
+            if pred[i] == gt[i]:
+                count += 1
+        acc_valid = count / len(gt)
+    return acc_valid
 
 def test(model, test_dataloader, device, ckpt):
     parm = torch.load(ckpt)
