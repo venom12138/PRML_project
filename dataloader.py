@@ -1,12 +1,3 @@
-'''
-Author: Hao
-Date: 2022-06-12 16:41:50
-Email: wenh19@outlook.com
-LastEditors: Hao
-LastEditTime: 2022-06-12 21:40:21
-Description: 
-Copyright (c) 2022 by Wen Hao, All Rights Reserved. 
-'''
 from PIL import Image
 import sys, os
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, RandomCrop
@@ -27,23 +18,26 @@ from utils import *
 import pdb
 
 class prmlDataset(Dataset):
-    ROOT_PATH = r'/mnt/cache/share_data/caisonghao.vendor/full'
+    ROOT_PATH = f'./data/full'
     JSON_NAME = ['train_all.json','test_all.json', 'cn_en.json']
     CV_SEED = 41 # Cross validation seed, must be fixed while training
-    TR_RATIO = 0.8
+    TR_RATIO = 0.8 # 划分训练集和验证集
     def __init__(self, type, transform):
         self.rs = np.random.RandomState(self.CV_SEED)
+        # 转换后的text集
         self.translator = parseJson(os.path.join(self.ROOT_PATH, self.JSON_NAME[2]))
         self.capList = []
         self.imgList = []
+        self.type = type
         if str(type)=='test':
             self.cn_capList = []
-        self.type = type
+        
         if str(type)=='train' or str(type)=='valid':
             jsPath = os.path.join(self.ROOT_PATH, self.JSON_NAME[0])
             self.js = parseJson(jsPath)
             self.imgPath = os.path.join(self.ROOT_PATH, 'train')
-            comList = glob.glob(self.imgPath+'/*/*.jpg')### 所有图片的name
+            comList = glob.glob(self.imgPath+'/*/*.jpg') ### 所有图片的name
+            # 划分训练集和验证集
             self.l = int(self.TR_RATIO * len(comList))
             self.rs.shuffle(comList)
             if str(type)=='train':
@@ -52,14 +46,18 @@ class prmlDataset(Dataset):
                 comList = comList[self.l:]
                 self.l = len(comList)
             for filePath in comList:
-                com_idx_jpg = filePath.split('/')[-1]   ## sigle
+                # 图片的名称
+                com_idx_jpg = filePath.split('/')[-1]   ## single
+                # 图片所属的商品类 和 图片在该类商品中的标号
                 com, idx = com_idx_jpg.split('_')[0], int(com_idx_jpg.strip('.jpg').split('_')[1])
-                #pdb.set_trace()
+                # 获取图片的中文gt label
                 cap_cn = self.js[com]['imgs_tags'][idx][com_idx_jpg]
+                # 获取图片的英文处理后的label
                 cap_en = self.translator[cap_cn]
                 self.capList.append(cap_en)  
                 self.imgList.append(filePath) 
             self.title = clip.tokenize(self.capList)
+            # print(f'title shape:{self.title.shape}')
             
         elif str(type)=='test':
             jsPath = os.path.join(self.ROOT_PATH, self.JSON_NAME[1])
@@ -76,13 +74,10 @@ class prmlDataset(Dataset):
                 self.capList.append(cap_en)
                 self.cn_capList.append(cap_cn)  
                 self.imgList.append(filePath)    
-            self.title = [clip.tokenize(en) for en in self.capList]
-                
-                
+            self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]               
             
         self._transform = transform
     
-        
     def __len__(self):
         return len(self.imgList)
 
@@ -108,4 +103,5 @@ class prmlDataset(Dataset):
 
 if __name__ == "__main__":
     # test
-    dataset = prmlDataset(type='test', transform=None)
+    dataset = prmlDataset(type='train', transform=None)
+    print(len(dataset))

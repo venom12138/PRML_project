@@ -41,10 +41,10 @@ def cleanUp(data_path):
         cn_bank = f.readlines()
         for i in range(len(cn_bank)):
             cn_bank[i] = cn_bank[i].strip('\n')
-            cn_bank[i] = cn_bank[i].replace('网红','')
     map = {}
     for word in cn_bank:
         identical = word
+        word = word.replace('网红','')
         new = []
         count = 0
         for i in fixed_word:
@@ -92,13 +92,14 @@ def buildCnEn(data_path):
     mid_cn2en = {}
     for i in range(l):
         mid_cn2en[mid[i].strip('\n')]=trans[i].strip('\n')
+    # key value
     for item in js.items():
         js[item[0]]=mid_cn2en[item[1]]
     with open(f'{data_path}/cn_en.json', 'w+',encoding='utf-8') as tf:
         json.dump(js, tf, ensure_ascii=False)
 
 if __name__ == "__main__":
-    data_path = "../data/medium"
+    data_path = "../data/full"
     
     # saveCnTxt(data_path)
     # statistic(data_path)

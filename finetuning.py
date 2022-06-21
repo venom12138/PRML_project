@@ -8,7 +8,7 @@
 # Half-precision stochastically rounded text encoder weights were used
 
 #BATCH_SIZE must larger than 1
-import multiprocessing as mp
+import torch.multiprocessing as mp
 mp.set_start_method('spawn', force=True)
 import torch.distributed as dist
 import torch.utils.data as data
@@ -24,25 +24,56 @@ from tqdm import tqdm
 from torch import nn
 import argparse
 from model import create_model_and_transforms
-from scheduler import cosine_lr
 from utils import *
+import math
 from loss import *
-BATCH_SIZE = 168
-EPOCH = 30
 
-class MyClip(nn.Module):
-    def __init__(self,clip_model):
-        super().__init__()
-        self.model = clip_model.float()
-        self.logit_scale = clip_model.logit_scale
-    def forward(self,images, texts):
-        image_features = self.model.encode_image(images)
-        text_features = self.model.encode_text(texts)
-        image_features = image_features / image_features.norm(dim=1, keepdim=True)
-        text_features = text_features / text_features.norm(dim=1, keepdim=True)
-        return image_features,text_features,self.logit_scale.exp()
+parser = argparse.ArgumentParser(description='Args for color match')
+parser.add_argument('--device',type=str,default='cuda')
+parser.add_argument('--optimizer',type=str,default='AdamW')
+parser.add_argument('--nproc_per_node', type=int, default=4)
+parser.add_argument('--backend', type=str, default='nccl')
+parser.add_argument('--lr_scheduler',type=str,default='cosine')
+parser.add_argument('--batch_size',type=int,default=896)
+parser.add_argument('--epochs',type=int,default=30)
+parser.add_argument('--model',type=str,default='ViT-B32',choices=['ViT-B32','ViT-B16','ViT-L14','RN50'])
+parser.add_argument('--pretrained',type=str,default='openai')
+parser.add_argument('--ckpt_path',type=str, default='/home/jwyu/.exp/PRML')
+parser.add_argument('--dist-url', default='tcp://localhost:23426', type=str,
+                    help='url used to set up distributed training')
+parser.add_argument('--lr',type=float,default=2.5e-5)
+parser.add_argument('--warmup',type=int,default=5)
+parser.add_argument('--phase',type=str,default='train',choices=['train', 'test'])
+parser.add_argument(
+    "--precision",
+    choices=["amp", "fp16", "fp32"],
+    default="fp32",
+    help="Floating point precision."
+)
+parser.add_argument(
+    "--horovod",
+    default=False,
+    action="store_true",
+    help="Use horovod for distributed training."
+)
+parser.add_argument(
+    "--torchscript",
+    default=False,
+    action='store_true',
+    help="torch.jit.script the model, also uses jit version of OpenAI models if pretrained=='openai'",
+)
+parser.add_argument(
+    "--force-quick-gelu",
+    default=False,
+    action='store_true',
+    help="Force use of QuickGELU activation for non-OpenAI transformer models.",
+)
+parser.add_argument('--en_wandb', type=int, default=0, choices=[0, 1])
+args = parser.parse_args()
+args.nproc_per_node = torch.cuda.device_count()
 
-
+exp = ExpHandler(en_wandb=args.en_wandb, args=args)
+exp.save_config(args)
 
 #https://github.com/openai/CLIP/issues/57
 def convert_models_to_fp32(model): 
@@ -51,8 +82,15 @@ def convert_models_to_fp32(model):
         p.grad.data = p.grad.data.float() 
         
 def main(local_rank, args):
-    rank, world_size = init_distributed(local_rank, args)
-    logger = create_logger(os.path.join(args.ckp_path,'log.txt'))
+    global exp
+    world_size = torch.cuda.device_count()
+    rank = local_rank
+    dist.init_process_group(backend=args.backend, init_method=args.dist_url, world_size=torch.cuda.device_count(), rank=local_rank)
+    print('[rank {:04d}]: distributed init: world_size={}, local_rank={}'.format(local_rank, torch.cuda.device_count(), local_rank), flush=True)
+    num_gpus = torch.cuda.device_count()
+    torch.cuda.set_device(local_rank%num_gpus)
+    
+    logger = create_logger(os.path.join(exp._save_dir,'log.txt'))
     device = "cuda" if torch.cuda.is_available() else "cpu" # If using GPU then use mixed precision training.
     logger.info('current device:{}'.format(device))
     model_map = {'ViT-B16':'ViT-B/16',
@@ -83,18 +121,18 @@ def main(local_rank, args):
     train_dataset = prmlDataset('train', preprocess_train)
     train_sampler = data.DistributedSampler(train_dataset)
     valid_dataset = prmlDataset('valid', preprocess_val)
-    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=(train_sampler is None), num_workers=24, sampler=train_sampler, pin_memory=True, persistent_workers=True) #Define your own dataloader
-    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=24, pin_memory=True, persistent_workers=True)
+    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=(train_sampler is None), num_workers=12, sampler=train_sampler, pin_memory=True, persistent_workers=True) #Define your own dataloader
+    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=12, pin_memory=True, persistent_workers=True)
     logger.info("=> Done")
 
-    optimizer = optim.AdamW(model.parameters(), lr=2.5e-7,betas=(0.9,0.999),eps=1e-6,weight_decay=0.05) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr,betas=(0.9,0.999),eps=1e-6,weight_decay=0.05) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
     total_steps = len(train_dataloader) * args.epochs
-    scheduler = cosine_lr(optimizer, args.lr, args.warmup, total_steps)
+
     scaler = GradScaler() if args.precision == "amp" else None
     logger.info("=> Start Training")
     if rank == 0:
         best_rank = 1000000000000
-    for epoch in range(EPOCH):
+    for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
         train_epoch(
             args=args,
@@ -103,7 +141,6 @@ def main(local_rank, args):
             model=model,
             optimizer=optimizer,
             scaler=scaler,
-            scheduler=scheduler,
             logger=logger,
             rank=rank,
             world_size=world_size
@@ -114,8 +151,7 @@ def main(local_rank, args):
                     'epoch': epoch,
                     'state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict()
-                    }, os.path.join(args.ckp_path,"model_{epoch}.pt")) 
+                    }, os.path.join(exp._save_dir,f"model_{epoch}.pt")) 
             dist.barrier()
         if rank == 0:
             val_metrics = evaluate(args,valid_dataloader,model)
@@ -124,11 +160,11 @@ def main(local_rank, args):
                 best_rank = cur_rank
                 torch.save({
                     'state_dict':model.state_dict()
-                },os.path.join(args.ckp_path,'best_acc_model.pt'))
+                },os.path.join(exp._save_dir,'model_best.pt'))
             logger.info('Best mean rank:{},current mean rank:{}'.format(best_rank,cur_rank))
         dist.barrier()
 
-def train_epoch(args,epoch,data_loader,model,optimizer, scaler, scheduler,
+def train_epoch(args,epoch,data_loader,model,optimizer, scaler, 
                 logger,rank,world_size):
     model.train()
     autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
@@ -142,7 +178,8 @@ def train_epoch(args,epoch,data_loader,model,optimizer, scaler, scheduler,
     )
     train_loss = 0
     total_batches = 0
-    for batch in tqdm(data_loader):
+    for idx, batch in enumerate(tqdm(data_loader)):
+        adjust_learning_rate(optimizer, epoch+idx/len(data_loader), args)
         optimizer.zero_grad()
         images, texts, info = batch 
         images= images.cuda()
@@ -169,7 +206,7 @@ def train_epoch(args,epoch,data_loader,model,optimizer, scaler, scheduler,
     if rank == 0:
         logger.info("=> Epoch {}: Loss: {}".format(epoch,train_loss))
 
-def evaluate(args,valid_dataloader,model):
+def evaluate(args, valid_dataloader, model):
     cumulative_loss = 0.0
     num_samples = 0
     autocast = torch.cuda.amp.autocast if args.precision == 'amp' else suppress
@@ -202,9 +239,10 @@ def evaluate(args,valid_dataloader,model):
         )
     return val_metrics
 
-def test(model,test_dataloader,device,ckp):
-    parm = torch.load(ckp)
-    state_dict = parm['model_state_dict']
+def test(model, test_dataloader, device, ckpt):
+    parm = torch.load(ckpt)
+    state_dict = parm['state_dict']
+    state_dict = consume_prefix(state_dict)
     model.load_state_dict(state_dict)
     results = {}
     with torch.no_grad():
@@ -222,51 +260,41 @@ def test(model,test_dataloader,device,ckp):
             predict_label = info['ori_label'][indices][0]
             com_idx = info['name'][0]
             results[com_idx] = predict_label
-    createJs(results,'/mnt/lustre/xingsen.vendor/PRMLdataset/full/test_all.json','results.json')
+    createJs(results,'./data/full/test_all.json',f'{exp._save_dir}/results.json')
 
+def adjust_learning_rate(optimizer, epoch, args):
+    """Decay the learning rate with half-cycle cosine after warmup"""
+    if epoch < args.warmup:
+        lr = args.lr * epoch / args.warmup 
+    else:
+        lr = args.lr * 0.5 * \
+            (1. + math.cos(math.pi * (epoch - args.warmup) / (args.epochs - args.warmup)))
+    for param_group in optimizer.param_groups:
+        if "lr_scale" in param_group:
+            param_group["lr"] = lr * param_group["lr_scale"]
+        else:
+            param_group["lr"] = lr
+    return lr
 
+def consume_prefix(ckpt):
+    new_state_dict = {}
+    for key, value in ckpt.items():
+        if key.startswith('module.'):
+            new_prefix = key[len('module.'):]
+            new_state_dict[new_prefix] = value
+        else:
+            new_state_dict[key] = value
+    return new_state_dict
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Args for color match')
-    parser.add_argument('--device',type=str,default='cuda')
-    parser.add_argument('--optimizer',type=str,default='AdamW')
-    parser.add_argument('--nproc_per_node', type=int, default=4)
-    parser.add_argument('--backend', type=str, default='nccl')
-    parser.add_argument('--lr_scheduler',type=str,default='cosine')
-    parser.add_argument('--batch_size',type=int,default=896)
-    parser.add_argument('--epochs',type=int,default=30)
-    parser.add_argument('--model',type=str,default='RN50',choices=['ViT-B32','ViT-B16','ViT-L14','RN50'])
-    parser.add_argument('--pretrained',type=str,default='openai')
-    parser.add_argument('--ckp_path',type=str,default='/mnt/lustre/xingsen.vendor/PRML')
-    parser.add_argument('--master_addr', type=str, default=socket.gethostbyname(socket.gethostname()))
-    parser.add_argument('--master_port', type=int, default=31111)
-    parser.add_argument('--nnodes', type=int, default=None)
-    parser.add_argument('--node_rank', type=int, default=None)
-    parser.add_argument('--lr',type=float,default=2.5e-5)
-    parser.add_argument('--warmup',type=int,default=5)
-    parser.add_argument(
-        "--precision",
-        choices=["amp", "fp16", "fp32"],
-        default="fp32",
-        help="Floating point precision."
-    )
-    parser.add_argument(
-        "--horovod",
-        default=False,
-        action="store_true",
-        help="Use horovod for distributed training."
-    )
-    parser.add_argument(
-        "--torchscript",
-        default=False,
-        action='store_true',
-        help="torch.jit.script the model, also uses jit version of OpenAI models if pretrained=='openai'",
-    )
-    parser.add_argument(
-        "--force-quick-gelu",
-        default=False,
-        action='store_true',
-        help="Force use of QuickGELU activation for non-OpenAI transformer models.",
-    )
-    args = parser.parse_args()
+    global args, exp
     torch.multiprocessing.spawn(main,args=(args,),nprocs=args.nproc_per_node)
+    
+    model, transform = clip.load("ViT-B/32",device='cuda',jit=False)
+    clip.model.convert_weights(model)
+    ckpt = f'{exp._save_dir}/model_best.pt'
+    parm = torch.load(ckpt)
+    
+    test_dataset = prmlDataset('test', transform)
+    test_dataloader = DataLoader(test_dataset, batch_size = 1)
+    test(model, test_dataloader, 'cuda', ckpt = ckpt)

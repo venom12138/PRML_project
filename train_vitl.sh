@@ -1,1 +1,0 @@
-srun -p video -n1 --gres=gpu:1 --quotatype=reserved python finetuning.py --model ViT-L14 --batch_size 144

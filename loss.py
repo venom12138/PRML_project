@@ -56,7 +56,6 @@ def gather_features(
 
 
 class ClipLoss(nn.Module):
-
     def __init__(
             self,
             local_loss=False,
