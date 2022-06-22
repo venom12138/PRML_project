@@ -9,7 +9,7 @@
 
 # BATCH_SIZE must larger than 1
 import torch.multiprocessing as mp
-mp.set_start_method('spawn', force=True)
+
 import torch.distributed as dist
 import torch.utils.data as data
 from contextlib import suppress
@@ -39,7 +39,6 @@ def convert_models_to_fp32(model):
 def main(local_rank, args, exp):
     world_size = torch.cuda.device_count()
     rank = local_rank
-    dist.init_process_group(backend=args.backend, init_method=args.dist_url, world_size=torch.cuda.device_count(), rank=local_rank)
     print('[rank {:04d}]: distributed init: world_size={}, local_rank={}'.format(local_rank, torch.cuda.device_count(), local_rank), flush=True)
     num_gpus = torch.cuda.device_count()
     torch.cuda.set_device(local_rank%num_gpus)
@@ -52,8 +51,7 @@ def main(local_rank, args, exp):
                  'ViT-L14':'ViT-L/14',
                  'RN50':'RN50'}
     logger.info("Preparing Model:" + args.model)
-    dist.barrier()
-
+    
     random_seed(1)
 
     #model, transform = clip.load(model_map[args.model],device=device,jit=False) #Must set jit=False for training
@@ -67,17 +65,15 @@ def main(local_rank, args, exp):
         pretrained_image=False,
     )
     
-    dist.barrier()
-    model = DistributedDataParallel(model,device_ids=[local_rank],find_unused_parameters=False)
     logger.info("Successfully create CLIP model")
 
     # use your own data
     logger.info("Preparing Dataset")
     train_dataset = prmlDataset('train', preprocess_train)
-    train_sampler = data.DistributedSampler(train_dataset)
+    # train_sampler = data.DistributedSampler(train_dataset)
     valid_dataset = prmlDataset('valid', preprocess_val)
-    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=(train_sampler is None), num_workers=12, sampler=train_sampler, pin_memory=True, persistent_workers=True, collate_fn=collate_wrapper) #Define your own dataloader
-    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=12, pin_memory=True, persistent_workers=True, collate_fn=collate_wrapper)
+    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=True, num_workers=12, pin_memory=True, persistent_workers=True, collate_fn=my_collate_fn) #Define your own dataloader
+    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=12, pin_memory=True, persistent_workers=True, collate_fn=my_collate_fn)# collate_fn=my_collate_fn
     logger.info("=> Done")
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr,betas=(0.9,0.999),eps=1e-6,weight_decay=0.05) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
@@ -90,7 +86,6 @@ def main(local_rank, args, exp):
         best_acc = 0
 
     for epoch in range(args.epochs):
-        train_sampler.set_epoch(epoch)
         train_one_epoch(
             args = args,
             epoch = epoch,
@@ -109,7 +104,7 @@ def main(local_rank, args, exp):
                     'state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, os.path.join(exp._save_dir,f"model_{epoch}.pt")) 
-            dist.barrier()
+            
         if rank == 0:
             acc_valid = evaluate(args,valid_dataloader,model)
             
@@ -119,7 +114,7 @@ def main(local_rank, args, exp):
                     'state_dict':model.state_dict()
                 },os.path.join(exp._save_dir,'model_best.pt'))
             logger.info('Best acc:{},current acc:{}'.format(best_acc,acc_valid))
-        dist.barrier()
+        
 
     if rank == 0:
         model, transform = clip.load("ViT-B/32",device='cuda',jit=False)
@@ -150,11 +145,12 @@ def train_one_epoch(args, epoch, data_loader, model, optimizer, scaler,
         adjust_learning_rate(optimizer, epoch+idx/len(data_loader), args)
         optimizer.zero_grad()
         images, texts, info = batch
+        
         images= images.cuda()
         texts = texts.cuda()
         with autocast():
             image_features, text_features, logit_scale = model(images, texts)
-            total_loss = loss(image_features, text_features, logit_scale, info)
+            total_loss = SingleLoss(image_features, text_features, logit_scale, info)
         if scaler is not None:
             scaler.scale(total_loss).backward()
             if args.horovod:
@@ -294,6 +290,5 @@ if __name__ == '__main__':
 
     exp = ExpHandler(en_wandb=args.en_wandb, args=args)
     exp.save_config(args)
-    # main(0, args, exp)
-    torch.multiprocessing.spawn(main, args=(args, exp), nprocs=args.nproc_per_node)
+    main(0, args, exp)
 

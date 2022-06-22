@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import wandb
+import sys
 import yaml
 
 _LOGGER = None
@@ -333,3 +334,33 @@ def init_distributed(local_rank, args):
     torch.cuda.set_device(local_rank%num_gpus)
     
     return rank, world_size
+
+
+# class SimpleCustomBatch:
+#     def __init__(self, batch):
+#         self.image = torch.tensor(np.array([b[0] for b in batch]))
+#         title = [b[1] for b in batch]
+#         self.info = [b[2] for b in batch]
+#         # print(f'titleshape:{title.shape}')
+#         length = max([inf['text_length'] for inf in self.info])
+#         self.title = torch.tensor(np.array([torch.cat((sub, torch.zeros((length-sub.shape[0],sub.shape[1])))).numpy() for sub in title]))
+
+#     # custom memory pinning method on custom type
+#     def pin_memory(self):
+#         self.image = self.image.pin_memory()
+#         self.title = self.title.pin_memory()
+#         return self.image, self.title, self.info
+
+# def collate_wrapper(batch):
+#     return SimpleCustomBatch(batch)
+
+def my_collate_fn(batch):
+    # print(f'batch:{batch}')
+    image = torch.from_numpy(np.array([b[0].numpy() for b in batch]))
+    title = [b[1] for b in batch]
+    info = [b[2] for b in batch]
+    # print(f'titleshape:{title.shape}')
+    length = max([inf['text_length'] for inf in info])
+    title = torch.tensor(np.array([torch.cat((sub, torch.zeros((length-sub.shape[0],sub.shape[1])))).numpy() for sub in title])).int()
+    
+    return image, title, info
