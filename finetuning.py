@@ -76,8 +76,8 @@ def main(local_rank, args, exp):
     train_dataset = prmlDataset('train', preprocess_train)
     train_sampler = data.DistributedSampler(train_dataset)
     valid_dataset = prmlDataset('valid', preprocess_val)
-    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=(train_sampler is None), num_workers=12, sampler=train_sampler, pin_memory=True, persistent_workers=True, collate_fn=collate_wrapper) #Define your own dataloader
-    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=12, pin_memory=True, persistent_workers=True, collate_fn=collate_wrapper)
+    train_dataloader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle=(train_sampler is None), num_workers=1, sampler=train_sampler, pin_memory=True, collate_fn=my_collate_fn) #Define your own dataloader
+    valid_dataloader = DataLoader(valid_dataset, batch_size = args.batch_size, num_workers=1, pin_memory=True,  collate_fn=my_collate_fn)# persistent_workers=True,
     logger.info("=> Done")
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr,betas=(0.9,0.999),eps=1e-6,weight_decay=0.05) #Params used from paper, the lr is smaller, more safe for fine tuning to new dataset
@@ -154,7 +154,7 @@ def train_one_epoch(args, epoch, data_loader, model, optimizer, scaler,
         texts = texts.cuda()
         with autocast():
             image_features, text_features, logit_scale = model(images, texts)
-            total_loss = loss(image_features, text_features, logit_scale, info)
+            total_loss = SingleLoss(image_features, text_features, logit_scale, info)
         if scaler is not None:
             scaler.scale(total_loss).backward()
             if args.horovod:
@@ -189,6 +189,7 @@ def evaluate(args, valid_dataloader, model):
             with autocast():
                 # 单卡eval
                 image_features, text_features, logit_scale = model.module(images, texts)
+                logits_per_image = logit_scale * image_features @ text_features.t()
                 probs = logits_per_image.softmax(dim=-1).cpu().numpy()
                 tag = np.argmax(probs, axis=-1)
                 pred.extend(list(np.array(info['caption'])[tag]))

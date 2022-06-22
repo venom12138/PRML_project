@@ -103,7 +103,7 @@ def main(local_rank, args, exp):
                     'epoch': epoch,
                     'state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    }, os.path.join(exp._save_dir,f"model_{epoch}.pt")) 
+                    }, os.path.join(exp._save_dir,f"model_{epoch}.pt"))
             
         if rank == 0:
             acc_valid = evaluate(args,valid_dataloader,model)
@@ -139,6 +139,7 @@ def train_one_epoch(args, epoch, data_loader, model, optimizer, scaler,
     #     use_horovod=args.horovod
     # )
     # loss = SingleLoss()
+
     train_loss = 0
     total_batches = 0
     for idx, batch in enumerate(tqdm(data_loader)):
@@ -184,11 +185,21 @@ def evaluate(args, valid_dataloader, model):
             texts = texts.cuda()
             with autocast():
                 # 单卡eval
-                image_features, text_features, logit_scale = model.module(images, texts)
-                probs = logits_per_image.softmax(dim=-1).cpu().numpy()
-                tag = np.argmax(probs, axis=-1)
-                pred.extend(list(np.array(info['caption'])[tag]))
-                gt.extend(info['caption'])
+                image_features, text_features, logit_scale = model(images, texts)
+                probs = []
+                for i in range(image_features.shape[0]):
+                    logits_per_image = logit_scale * image_features[i].unsqueeze(0)@ text_features[i].T
+                    # logits_per_image = logit_scale * image_features @ text_features.t()
+                    effect_logits = logits_per_image[:info[i]['text_length']].softmax(dim=-1).cpu().numpy()
+                    probs.extend(np.argmax(effect_logits, axis=-1))
+                    # print(f'caption:{info[i]["caption"]}')
+                    gt.append(info[i]['caption'])
+                # tag = np.argmax(probs, axis=-1)
+                
+                # print(f'pred:{pred}')
+                # print(f'gt:{gt}')
+                pred.extend(probs)
+                # gt.extend(info['caption'])
             
         for i in range(len(gt)):
             if pred[i] == gt[i]:

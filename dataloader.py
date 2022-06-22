@@ -1,4 +1,5 @@
 from PIL import Image
+import cv2
 import sys, os
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, RandomCrop
 from tqdm import tqdm
@@ -100,7 +101,7 @@ class prmlDataset(Dataset):
 
     def __getitem__(self, idx):
         if self._transform is not None:
-            image = self._transform(Image.open(self.imgList[idx]))
+            image = self._transform(Image.open(self.imgList[idx])) # Image.open(self.imgList[idx])
         else:
             self._transform = Compose([
                     _convert_to_rgb,
