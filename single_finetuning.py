@@ -200,7 +200,7 @@ def evaluate(args, valid_dataloader, model):
                 # print(f'gt:{gt}')
                 pred.extend(probs)
                 # gt.extend(info['caption'])
-            
+        count = 0 
         for i in range(len(gt)):
             if pred[i] == gt[i]:
                 count += 1
