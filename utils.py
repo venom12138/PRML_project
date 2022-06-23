@@ -227,13 +227,14 @@ def createJs(pred:dict,ori_path, out_path):
             if js[comName]['imgs_tags'][idx][fileName] is None:
                 js[comName]['imgs_tags'][idx][fileName] = pred[pic]
             else:
-                raise ValueError("Duplicated Prediction!")
+                assert False
         else:
-            raise ValueError("Illegal Prediction!")
+            assert False
     # assert every prediction is set
     for com in js.keys():
         for tag in js[com]['imgs_tags']:
-            assert tag.values() is not None, "Incomplete Prediction!"
+            assert tag.values() is not None
+
     with open(out_path, 'w+', encoding='utf-8') as f:
         json.dump(js, f, ensure_ascii=False)
         print("Json Saved")
@@ -302,57 +303,6 @@ class AverageMeter(object):
             self.sum += val * num
             self.count += num
             self.avg = self.sum / self.count
-
-def get_metrics(image_features, text_features, logit_scale):
-    metrics = {}
-    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
-    logits_per_text = logits_per_image.t().detach().cpu()
-
-    logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
-    ground_truth = torch.arange(len(text_features)).view(-1, 1)
-    for name, logit in logits.items():
-        ranking = torch.argsort(logit, descending=True)
-        preds = torch.where(ranking == ground_truth)[1]
-        preds = preds.detach().cpu().numpy()
-        metrics[f"{name}_mean_rank"] = preds.mean() + 1
-        metrics[f"{name}_median_rank"] = np.floor(np.median(preds)) + 1
-        for k in [1, 5, 10]:
-            metrics[f"{name}_R@{k}"] = np.mean(preds < k)
-
-    return metrics
-
-def init_distributed(local_rank, args):
-    os.environ['MASTER_PORT'] = str(args.master_port)
-    os.environ['MASTER_ADDR'] = str(args.master_addr)
-
-    world_size = n_nodes * args.nproc_per_node
-    rank = node_id * args.nproc_per_node + local_rank
-    dist.init_process_group(backend=args.backend, init_method='env://', world_size=world_size, rank=rank)
-    print('[rank {:04d}]: distributed init: world_size={}, local_rank={}'.format(rank, world_size, local_rank), flush=True)
-    
-    num_gpus = torch.cuda.device_count()
-    torch.cuda.set_device(local_rank%num_gpus)
-    
-    return rank, world_size
-
-
-# class SimpleCustomBatch:
-#     def __init__(self, batch):
-#         self.image = torch.tensor(np.array([b[0] for b in batch]))
-#         title = [b[1] for b in batch]
-#         self.info = [b[2] for b in batch]
-#         # print(f'titleshape:{title.shape}')
-#         length = max([inf['text_length'] for inf in self.info])
-#         self.title = torch.tensor(np.array([torch.cat((sub, torch.zeros((length-sub.shape[0],sub.shape[1])))).numpy() for sub in title]))
-
-#     # custom memory pinning method on custom type
-#     def pin_memory(self):
-#         self.image = self.image.pin_memory()
-#         self.title = self.title.pin_memory()
-#         return self.image, self.title, self.info
-
-# def collate_wrapper(batch):
-#     return SimpleCustomBatch(batch)
 
 def my_collate_fn(batch):
     # print(f'batch:{batch}')

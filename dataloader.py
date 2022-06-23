@@ -33,68 +33,65 @@ class prmlDataset(Dataset):
         self.rs = np.random.RandomState(self.CV_SEED)
         # 转换后的text集
         self.translator = parseJson(os.path.join(self.ROOT_PATH, self.JSON_NAME[2]))
-        self.capList = []
+        self.tagList = []
         self.imgList = []
-        
-        self.type = type
-        if str(type)=='test':
-            self.cn_capList = []
+        self.type = str(type)
+
+        if self.type=='test':
+            self.cn_tagList = []
+            jsPath = os.path.join(self.ROOT_PATH, self.JSON_NAME[1])
         else:
             self.gt_idx = []
-        if str(type)=='train' or str(type)=='valid':
             jsPath = os.path.join(self.ROOT_PATH, self.JSON_NAME[0])
-            self.js = parseJson(jsPath)
-            self.imgPath = os.path.join(self.ROOT_PATH, 'train')
-            comList = glob(self.imgPath+'/*/*.jpg') ### 所有图片的name
-            # 划分训练集和验证集
-            self.l = int(self.TR_RATIO * len(comList))
-            self.rs.shuffle(comList)
-            if str(type)=='train':
-                comList = comList[:self.l]
-            if str(type)=='valid':
-                comList = comList[self.l:]
-                self.l = len(comList)
-            for filePath in comList:
+        
+        self.js = parseJson(jsPath)
+        self.imgPath = os.path.join(self.ROOT_PATH, 'train')
+        dataList = glob(self.imgPath+'/*/*.jpg') ### 所有图片的name
+        # 划分训练集和验证集
+        self.train_len = int(self.TR_RATIO * len(dataList))
+
+        if self.type == 'train' or self.type == 'valid':
+            
+            self.rs.shuffle(dataList)
+            if self.type=='train':
+                dataList = dataList[:self.train_len]
+            if self.type=='valid':
+                dataList = dataList[self.train_len:]
+                self.train_len = len(dataList)
+            for filePath in dataList:
                 # 图片的名称
-                com_idx_jpg = filePath.split('/')[-1]   ## single
+                com_name = filePath.split('/')[-1]   ## single
                 # 图片所属的商品类 和 图片在该类商品中的标号
-                com, idx = com_idx_jpg.split('_')[0], int(com_idx_jpg.strip('.jpg').split('_')[1])
+                com = com_name.split('_')[0]
+                idx = int(com_name.strip('.jpg').split('_')[1])
                 # 获取图片的中文gt label
-                cap_cn = self.js[com]['imgs_tags'][idx][com_idx_jpg]
+                tag_cn = self.js[com]['imgs_tags'][idx][com_name]
                 # 获取图片的英文处理后的label
-                cap_en = self.translator[cap_cn]
+                tag_en = self.translator[tag_cn]
                 # optional cap
                 opt_tags_cn = self.js[com]['optional_tags']
                 opt_tags_en =  [self.translator[cn] for cn in opt_tags_cn]
                 # optional tags list
-                self.capList.append(opt_tags_en)
-                # self.capList.append(cap_en)  
+                self.tagList.append(opt_tags_en)
+                # self.tagList.append(tag_en)  
                 self.imgList.append(filePath) 
-                self.gt_idx.append(opt_tags_en.index(cap_en))
-
-            # self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]  
-            self.title = [clip.tokenize(en) for en in self.capList]
-            # clip.tokenize(self.capList)
-            # print(f'title shape:{self.title[0].shape}')
-            # print(f'title2 shape:{self.title2.shape}')
+                self.gt_idx.append(opt_tags_en.index(tag_en))
+  
+            self.title = [clip.tokenize(en) for en in self.tagList]
             
-        elif str(type)=='test':
-            jsPath = os.path.join(self.ROOT_PATH, self.JSON_NAME[1])
-            self.js = parseJson(jsPath)
-            self.imgPath = os.path.join(self.ROOT_PATH, 'test')
-            comList = glob(self.imgPath+'/*/*.jpg')
-            self.l = len(comList)
-            for filePath in comList:
+            
+        elif self.type=='test':
+            
+            for filePath in dataList:
                 #pdb.set_trace()
-                com_idx_jpg = filePath.split('/')[-1]
-                com = com_idx_jpg.split('_')[0]
-                cap_cn = self.js[com]['optional_tags']
-                cap_en =  [self.translator[cn] for cn in cap_cn]
-                self.capList.append(cap_en)
-                self.cn_capList.append(cap_cn)  
+                com_name = filePath.split('/')[-1]
+                com = com_name.split('_')[0]
+                tag_cn = self.js[com]['optional_tags']
+                tag_en =  [self.translator[cn] for cn in tag_cn]
+                self.tagList.append(tag_en)
+                self.cn_tagList.append(tag_cn)  
                 self.imgList.append(filePath)    
-            self.title = [clip.tokenize(en) for en in self.capList]
-            # self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]               
+            self.title = [clip.tokenize(en) for en in self.tagList]         
             
         self._transform = transform
     
@@ -115,8 +112,8 @@ class prmlDataset(Dataset):
         if str(self.type) == 'test':
             info = {'path': self.imgList[idx], 
                     'name': self.imgList[idx].split('/')[-1].strip('.jpg'),
-                    'caption': self.capList[idx],
-                    'ori_label':self.cn_capList[idx]}
+                    'caption': self.tagList[idx],
+                    'ori_label':self.cn_tagList[idx]}
         else:
             info = {'path': self.imgList[idx], 
                     'name': self.imgList[idx].split('/')[-1].strip('.jpg'),
