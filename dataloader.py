@@ -26,8 +26,8 @@ import torchvision.transforms as transforms
 
 class prmlDataset(Dataset):
     ROOT_PATH = f'./data/full'
-    JSON_NAME = ['train_all.json','test_all.json', 'cn_en.json']
-    CV_SEED = 41 # Cross validation seed, must be fixed while training
+    JSON_NAME = ['train_all.json','test_all.json', 'dirty_cn_en.json']
+    CV_SEED = 41 # Cross validation seed, must be fixed while training #  'cn_en.json',
     TR_RATIO = 0.8 # 划分训练集和验证集
     def __init__(self, type, transform):
         self.rs = np.random.RandomState(self.CV_SEED)
@@ -72,8 +72,9 @@ class prmlDataset(Dataset):
                 self.imgList.append(filePath) 
                 self.gt_idx.append(opt_tags_en.index(cap_en))
 
-            self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]  
-            # self.title2 = clip.tokenize(self.CapList)
+            # self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]  
+            self.title = [clip.tokenize(en) for en in self.capList]
+            # clip.tokenize(self.capList)
             # print(f'title shape:{self.title[0].shape}')
             # print(f'title2 shape:{self.title2.shape}')
             
@@ -92,7 +93,8 @@ class prmlDataset(Dataset):
                 self.capList.append(cap_en)
                 self.cn_capList.append(cap_cn)  
                 self.imgList.append(filePath)    
-            self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]               
+            self.title = [clip.tokenize(en) for en in self.capList]
+            # self.title = [clip.tokenize([f'a photo of {word} clothes' for word in en]) for en in self.capList]               
             
         self._transform = transform
     

@@ -76,18 +76,18 @@ def cleanUp(data_path):
         tf.write('\n'.join([str(item[1]) for item in map.items()]))
 
 def align(data_path):
-    with open(f'{data_path}/mid.txt', 'r', encoding='utf-8') as f:
+    with open(f'{data_path}/cn_bank.txt', 'r', encoding='utf-8') as f:
         mid = f.readlines()
-    with open(f'{data_path}/mid_trans.txt', 'r', encoding='utf-8') as f:
+    with open(f'{data_path}/cn_translate.txt', 'r', encoding='utf-8') as f:
         trans = f.readlines()
     assert len(trans) ==  len(mid), "=> ERROR: Translation misAligned"
     
 def buildCnEn(data_path):
-    with open(f'{data_path}/mid.txt', 'r', encoding='utf-8') as f:
+    with open(f'{data_path}/cn_bank.txt', 'r', encoding='utf-8') as f:
         mid = f.readlines()
-    with open(f'{data_path}/mid_trans.txt', 'r', encoding='utf-8') as f:
+    with open(f'{data_path}/cn_translate.txt', 'r', encoding='utf-8') as f:
         trans = f.readlines()
-    js = parseJson(f'{data_path}/map.json')
+    js = parseJson(f'{data_path}/dirty_map.json')
     l = len(trans)
     mid_cn2en = {}
     for i in range(l):
@@ -95,7 +95,7 @@ def buildCnEn(data_path):
     # key value
     for item in js.items():
         js[item[0]]=mid_cn2en[item[1]]
-    with open(f'{data_path}/cn_en.json', 'w+',encoding='utf-8') as tf:
+    with open(f'{data_path}/dirty_cn_en.json', 'w+',encoding='utf-8') as tf:
         json.dump(js, tf, ensure_ascii=False)
 
 if __name__ == "__main__":
@@ -104,5 +104,15 @@ if __name__ == "__main__":
     # saveCnTxt(data_path)
     # statistic(data_path)
     # cleanUp(data_path) 
+    with open(f'{data_path}/cn_bank.txt', 'r', encoding='utf-8') as f:
+        cn_bank = f.readlines()
+        for i in range(len(cn_bank)):
+            cn_bank[i] = cn_bank[i].strip('\n')
+    map = {}
+    for word in cn_bank:
+        identical = word
+        map[identical] = "".join(identical)
+    with open(f'{data_path}/dirty_map.json', 'w+',encoding='utf-8') as tf:
+        json.dump(map, tf, ensure_ascii=False)
     align(data_path)
     buildCnEn(data_path)
